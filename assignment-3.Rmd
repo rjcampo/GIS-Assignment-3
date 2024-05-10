@@ -1,0 +1,170 @@
+---
+title: "GIS Assignment 3"
+author: "Richard Campo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, warning = FALSE, message = FALSE}
+library(sf)
+library(tmap)
+library(tidyverse)
+library(scales)
+```
+
+```{r load-community-areas}
+community_areas <- st_read(
+  "community areas/geo_export_068ebbaf-bd83-499b-a077-5f89f1540f99.shp"
+  )
+```
+
+
+```{r load-health-indicators}
+# From Chicago Health Atlas
+health_data <- read_csv("health indicators.csv")
+health_data <- health_data[-1,-1] # drop empty first row and layer col
+health_data <-  health_data %>% 
+  mutate(pcp_rate = as.numeric(`HCSPCPP_2021-2022`),
+         checkup_rate = as.numeric(`HCSRCP_2021-2022`)) %>% 
+  select(-`HCSPCPP_2021-2022`, -`HCSRCP_2021-2022`)
+```
+
+```{r load-primary-care}
+# From Chicago Data Portal
+primary_centers <- read_csv("primary care centers.csv")
+primary_centers <- primary_centers %>% select(-Phone) # Don't need phone#
+```
+
+```{r address-to-latlong}
+# Address column has address then geometry, so extract geometry
+split_addresses <- strsplit(as.character(primary_centers$Address), "\n")
+
+primary_centers$Address <- sapply(split_addresses, 
+                                  function(address) address[[2]])
+
+primary_centers <- primary_centers %>% rename(latlong = Address)
+```
+
+```{r latlong-to-geometry}
+# Extract lat and long
+primary_centers$latitude <- as.numeric(gsub("\\((.*),.*\\)", 
+                                            "\\1", 
+                                            primary_centers$latlong))
+
+primary_centers$longitude <- as.numeric(gsub("\\(.*,(.*)\\)", 
+                                            "\\1", 
+                                            primary_centers$latlong))
+
+# Create sf geometry column
+pc_points <- st_as_sf(primary_centers, 
+                      coords = c("longitude","latitude"), 
+                      crs = 4326)
+
+pc_points <- pc_points %>% select(-latlong)
+```
+
+```{r merge}
+community_areas$area_numbe <- as.numeric(community_areas$area_numbe)
+
+health_data_ca <- merge(community_areas, 
+                        health_data, 
+                        by.x = "area_numbe", 
+                        by.y = "GEOID")
+```
+
+```{r pip}
+pip <- st_join(pc_points, health_data_ca, join = st_within)
+pc_count <- as.data.frame(table(pip$Name))
+names(pc_count) <- c("Name","PC_count")
+```
+
+```{r merge-pip}
+health_data_final <- merge(health_data_ca, pc_count, by="Name", all.x = TRUE)
+
+health_data_final <- health_data_final %>% 
+  mutate(PC_count = replace_na(PC_count, 0))
+```
+
+```{r bounding-box}
+bbox <- health_data_final %>% 
+  filter(
+    Name %in% c(
+    "Hyde Park", "Kenwood", "Washington Park", "Woodlawn",
+    "Grand Boulevard", "Fuller Park")
+    ) %>% 
+  st_bbox()
+```
+
+
+```{r}
+tm_shape(health_data_final, bbox = bbox) + 
+  tm_fill("PC_count", n = 4, pal = "YlOrRd", title = "Frequency") + 
+  tm_layout(frame = FALSE, legend.position = c(0.9, 0.4),
+            legend.title.size = 0.85, legend.text.size = 0.65,
+            main.title = paste0(
+              "Primary Care Centers by\nCommunity ", 
+              "Area in Chicago"),
+            main.title.size = 1,
+            main.title.position = "center"
+            ) +
+  tm_borders(alpha = 0.4) +
+  tm_scale_bar(position = c("left", "bottom")) +
+  tm_credits("Source:\nChicago Data Portal", position = c(0.65, 0),
+             col = "darkblue") +
+  tm_compass(position = c("right", "top"), size = 1.2, type = "arrow") +
+  tm_text("Name", size = 0.8, root = TRUE, col = "black") +
+  tm_shape(pc_points) + tm_dots(col = "purple4", size = 0.15)
+```
+
+```{r}
+tm_shape(health_data_final, bbox = bbox) + 
+  tm_fill("pcp_rate", n = 4, pal = "Blues", 
+          title = "Percent of Adults", style = "jenks", 
+          legend.format = list(fun = label_percent(scale = 1))) + 
+  tm_layout(frame = FALSE, legend.position = c(0.9, 0.5),
+            legend.title.size = 0.85, legend.text.size = 0.65,
+            main.title = paste0(
+              "Primary Care Provider Rate by\nCommunity ", 
+              "Area in Chicago"),
+            main.title.size = 1,
+            main.title.position = "center"
+            ) +
+  tm_borders(alpha = 0.4) +
+  tm_scale_bar(position = c("left", "bottom")) +
+  tm_credits("Source:\nChicago Health Atlas", position = c(0.63, 0),
+             col = "white") +
+  tm_compass(position = c("right", "top"), size = 1.2, type = "arrow") +
+  tm_text("Name", size = 0.8, root = TRUE, col = "black") +
+  tm_shape(pc_points) + tm_dots(col = "red3", size = 0.15)
+```
+
+```{r}
+tm_shape(health_data_final, bbox = bbox) + 
+  tm_fill("checkup_rate", n = 4, pal = "Greens", 
+          title = "Percent of Adults", style = "jenks",
+          legend.format = list(fun = label_percent(scale = 1))) + 
+  tm_layout(frame = FALSE, legend.position = c(0.9, 0.5),
+            legend.title.size = 0.85, legend.text.size = 0.65,
+            main.title = paste0(
+              "Routine Checkup Rate\n", 
+              "by Community Area in Chicago"),
+            main.title.size = 1,
+            main.title.position = "center"
+            ) +
+  tm_borders(alpha = 0.4) +
+  tm_scale_bar(position = c("left", "bottom")) +
+  tm_credits("Source:\nChicago Health Atlas", position = c(0.63, 0),
+             col = "white") +
+  tm_compass(position = c("right", "top"), size = 1.2, type = "arrow") +
+  tm_text("Name", size = 0.8, root = TRUE, col = "black") +
+  tm_shape(pc_points) + tm_dots(col = "black", size = 0.15)
+```
+
